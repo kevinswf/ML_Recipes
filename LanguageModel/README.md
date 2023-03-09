@@ -10,3 +10,6 @@ Using MLP architecture following [Bengio et al.](https://www.jmlr.org/papers/vol
 
 ### Wavenet
 Using Wavenet architecture follwing [DeepMind](https://arxiv.org/pdf/1609.03499.pdf), using 3 FlattenConsecutive layer which takes 2 consectuive chars each.
+
+### GPT
+Using Transformer architecture following ["Attention is all you need"](https://arxiv.org/abs/1706.03762) using Transformers.
