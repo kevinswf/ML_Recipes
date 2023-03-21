@@ -85,7 +85,7 @@ class CtScan:
         ct_np.clip(-1000, 1000, ct_np)
 
         self.series_uid = series_uid
-        self.ct_np = ct_np
+        self.ct = ct_np
 
         self.origin_xyz = xyz_tuple(*ct_mhd.GetOrigin())                # get annotation coord origin from metadata
         self.vx_size_xyz = xyz_tuple(*ct_mhd.GetSpacing())              # get CT scan voxel size (in mm) from metadata
@@ -100,7 +100,7 @@ class CtScan:
         # iterate over each axis
         for axis, center in enumerate(center_irc):
             # check that the center is within bound
-            assert center >=0 and center < self.ct_np.shape[axis], repr('candidate center out of bound error')
+            assert center >=0 and center < self.ct.shape[axis], repr('candidate center out of bound error')
 
             # set the start and end index of voxels to include based on the specified width
             start_idx = int(round(center - width_irc[axis]/2))
@@ -111,14 +111,14 @@ class CtScan:
                 start_idx = 0
                 end_idx = int(width_irc[axis])
             # cap end_idx to bound
-            if end_idx > self.ct_np.shape[axis]:
-                end_idx = self.ct_np.shape[axis]
+            if end_idx > self.ct.shape[axis]:
+                end_idx = self.ct.shape[axis]
                 start_idx = int(end_idx - width_irc[axis])
 
             # include these voxels
             slice_list.append(slice(start_idx, end_idx))
 
-        ct_chunk = self.ct_np[tuple(slice_list)]
+        ct_chunk = self.ct[tuple(slice_list)]
         # return the subset of voxels around the center, and center
         return ct_chunk, center_irc
     
@@ -140,7 +140,7 @@ class LunaDataset(Dataset):
     def __init__(self, val_stride=10, is_val_set=None, series_uid=None):
         super().__init__()
 
-        # get the data samples annotations
+        # get all the data samples annotations
         self.nodule_candidate_info = copy.copy(get_nodule_candidate_info_list())    # copy so won't alter the cached copy
 
         # if we only want certain samples as specified by uid
@@ -172,7 +172,7 @@ class LunaDataset(Dataset):
         ct_chunk = torch.from_numpy(ct_chunk).to(torch.float32)     # convert to tesnor
         ct_chunk = ct_chunk.unsqueeze(0)                            # add a channel dimension, now (channel, index, row, column)
 
-        # construct label as two element, i.e. nodule or not nodule
+        # construct label as two class, i.e. not nodule or is nodule
         label = torch.tensor([not sample.is_nodule, sample.is_nodule], dtype=torch.long)
 
         return (ct_chunk, label, sample.series_uid, torch.tensor(center_irc))
