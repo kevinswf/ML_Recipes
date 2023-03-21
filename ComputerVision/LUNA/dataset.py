@@ -1,12 +1,22 @@
 from collections import namedtuple
 import functools
 import csv
-import SimpleITK as sitk
 import glob
+import copy
 
 import numpy as np
+import SimpleITK as sitk
+
+import torch
+from torch.utils.data import Dataset
 
 from util.util import xyz_tuple, xyz_to_irc
+from util.disk import get_cache
+
+# params
+width_irc = (32, 48, 48)                # the size of subset of voxels around the center of nodule we want to retrieve
+data_root_path = 'F:/MLData/LUNA/'       # root folder of where the LUNA dataset is stored
+raw_cache = get_cache(data_root_path + 'cache/')
 
 
 # a sample of data contains whether it's nodule, its diamter (mm), its CT uid, and its center (xyz) in the CT
@@ -18,7 +28,7 @@ def get_nodule_candidate_info_list():
 
     # get data from annotations.csv in the form of {uid: (center, diameter)}
     diamter_dict = {}
-    with open('F/MLData/LUNA/annotations.csv', 'r') as f:
+    with open(data_root_path + 'annotations.csv', 'r') as f:
         # read each row, skip header
         for row in list(csv.reader(f))[1:]:
             series_uid = row[0]
@@ -30,7 +40,7 @@ def get_nodule_candidate_info_list():
 
     # get data from candidates.csv and construct data of (is_nodule, diameter, uid, center)   
     nodule_candidate_info_list = []
-    with open('F/MLData/LUNA/candidates.csv', 'r') as f:
+    with open(data_root_path + 'candidates.csv', 'r') as f:
         # read each row, skip header
         for row in list(csv.reader(f))[1:]:
             series_uid = row[0]
@@ -67,7 +77,7 @@ class CtScan:
 
     def __init__(self, series_uid):
         # reads a CT scan metadata and raw image file, and convert to np array
-        mhd_path = glob.glob(f'F:/MLData/LUNA/subset0/{series_uid}.mhd')[0]
+        mhd_path = glob.glob(data_root_path + f'subset*/{series_uid}.mhd')[0]
         ct_mhd = sitk.ReadImage(mhd_path)                                       # sitk reads both metadata and .raw file
         ct_np = np.array(sitk.GetArrayFromImage(ct_mhd), dtype=np.float32)      # 3D array of CT scan
 
@@ -111,4 +121,58 @@ class CtScan:
         ct_chunk = self.ct_np[tuple(slice_list)]
         # return the subset of voxels around the center, and center
         return ct_chunk, center_irc
+    
+@functools.lru_cache(maxsize=1, typed=True)     # cache because loading CT is slow, and we will access often
+def get_ct(series_uid):
+    return CtScan(series_uid)
 
+# function to load CT scans, extract voxels around nodule, and cache to disk
+@raw_cache.memoize(typed=True)                  # cache on disk because loading CT is slow, and we will access often
+def get_ct_raw_candidate(series_uid, center_xyz, width_irc):
+    # get the ct scan
+    ct = get_ct(series_uid)
+    # get the ct scan's voxel around the center of the nodule candidate
+    ct_chunk, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
+    return ct_chunk, center_irc
+
+class LunaDataset(Dataset):
+
+    def __init__(self, val_stride=10, is_val_set=None, series_uid=None):
+        super().__init__()
+
+        # get the data samples annotations
+        self.nodule_candidate_info = copy.copy(get_nodule_candidate_info_list())    # copy so won't alter the cached copy
+
+        # if we only want certain samples as specified by uid
+        if series_uid:
+            self.nodule_candidate_info = [x for x in self.nodule_candidate_info if x.series_uid == series_uid]
+
+        # if creating the val set
+        if is_val_set:
+            assert val_stride > 0, val_stride
+            # select every nth sample as the val set, as indicated by val_stride
+            self.nodule_candidate_info = self.nodule_candidate_info[::val_stride]
+        else:   # training set
+            assert val_stride > 0
+            # remove every nth sample from the training set, as they are in the val set
+            del self.nodule_candidate_info[::val_stride]
+            assert self.nodule_candidate_info
+
+
+    def __len__(self):
+        return len(self.nodule_candidate_info)
+    
+    def __getitem__(self, idx):
+        # get the sample's annotation
+        sample = self.nodule_candidate_info[idx]
+
+        # get the sample's center and also voxels around the center
+        ct_chunk, center_irc = get_ct_raw_candidate(sample.series_uid, sample.center, width_irc)
+
+        ct_chunk = torch.from_numpy(ct_chunk).to(torch.float32)     # convert to tesnor
+        ct_chunk = ct_chunk.unsqueeze(0)                            # add a channel dimension, now (channel, index, row, column)
+
+        # construct label as two element, i.e. nodule or not nodule
+        label = torch.tensor([not sample.is_nodule, sample.is_nodule], dtype=torch.long)
+
+        return (ct_chunk, label, sample.series_uid, torch.tensor(center_irc))
