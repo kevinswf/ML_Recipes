@@ -3,6 +3,7 @@ import functools
 import csv
 import glob
 import copy
+import os
 
 import numpy as np
 import SimpleITK as sitk
@@ -12,19 +13,28 @@ from torch.utils.data import Dataset
 
 from util.util import xyz_tuple, xyz_to_irc
 from util.disk import get_cache
+from util.loggingconf import logging
+
+log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
 
 # params
 width_irc = (32, 48, 48)                # the size of subset of voxels around the center of nodule we want to retrieve
-data_root_path = 'F:/MLData/LUNA/'       # root folder of where the LUNA dataset is stored
+data_root_path = 'C:/MLData/LUNA/'       # root folder of where the LUNA dataset is stored
 raw_cache = get_cache(data_root_path + 'cache/')
 
 
 # a sample of data contains whether it's nodule, its diamter (mm), its CT uid, and its center (xyz) in the CT
-nodule_candidate_info_tuple = namedtuple("NoduleCandidateInfoTuple", "is_nodule, diameter, series_uid, center")
+nodule_candidate_info_tuple = namedtuple("nodule_candidate_info_tuple", "is_nodule, diameter, series_uid, center")
 
 # function to populate the data with samples of (is_nodule, diameter, uid, center)
 @functools.lru_cache(maxsize=1)                         # cache since data file parsing could be slow, and we use this function often
 def get_nodule_candidate_info_list():
+
+    # get the data files that are present on disk (for experimenting with smaller dataset)
+    mhd_list = glob.glob(data_root_path + 'subset*/*.mhd')
+    uid_on_disk = {os.path.split(p)[-1][:-4] for p in mhd_list}
+
 
     # get data from annotations.csv in the form of {uid: (center, diameter)}
     diamter_dict = {}
@@ -44,6 +54,11 @@ def get_nodule_candidate_info_list():
         # read each row, skip header
         for row in list(csv.reader(f))[1:]:
             series_uid = row[0]
+
+            # if the uid in the annotation file does not correspond to a CT data on disk
+            if series_uid not in uid_on_disk:
+                continue
+
             is_nodule = bool(int(row[4]))
             candidate_center = tuple([float(value) for value in row[1:4]])
 
@@ -158,6 +173,11 @@ class LunaDataset(Dataset):
             del self.nodule_candidate_info[::val_stride]
             assert self.nodule_candidate_info
 
+        # sort the data
+        self.nodule_candidate_info.sort(key=lambda x: (x.series_uid, x.center))
+
+        log.info(f"Dataset {len(self.nodule_candidate_info)} {str('val') if is_val_set else str('train')} samples")
+
 
     def __len__(self):
         return len(self.nodule_candidate_info)
@@ -175,4 +195,4 @@ class LunaDataset(Dataset):
         # construct label as two class, i.e. not nodule or is nodule
         label = torch.tensor([not sample.is_nodule, sample.is_nodule], dtype=torch.long)
 
-        return (ct_chunk, label, sample.series_uid, torch.tensor(center_irc))
+        return ct_chunk, label, sample.series_uid, torch.tensor(center_irc)
