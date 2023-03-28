@@ -173,21 +173,32 @@ class LunaTrainingApp:
         neg_count = int(neg_labels_idx.sum())
 
         # number of correct predictions
-        pos_correct = int((pos_labels_idx & pos_preds_idx).sum())
-        neg_correct = int((neg_labels_idx & neg_preds_idx).sum())
+        true_positive = int((pos_labels_idx & pos_preds_idx).sum())
+        true_negative = int((neg_labels_idx & neg_preds_idx).sum())
+
+        false_positive = neg_count - true_negative
+        false_negative = pos_count - true_positive
+
+        # precision, recall, f1
+        precision = true_positive / np.float32(true_positive + false_positive)
+        recall = true_positive / np.float32(true_positive + false_negative)
+        f1 = 2 * (precision * recall) / (precision + recall)
 
         metrics_log = {}
-        metrics_log['loss_avg'] = metrics[METRICS_LOSS_IDX].mean()                                      # average loss on all samples
-        metrics_log['loss_avg_pos'] = metrics[METRICS_LOSS_IDX, pos_labels_idx].mean()                  # average loss on positive samples, i.e. labled nodule samples
-        metrics_log['loss_avg_neg'] = metrics[METRICS_LOSS_IDX, neg_labels_idx].mean()                  # average loss on negative samples
-        metrics_log['correct_all'] = (pos_correct + neg_correct) / np.float32(metrics.shape[1]) * 100   # correct prediction percentage on all samples
-        metrics_log['correct_pos'] = pos_correct / np.float32(pos_count) * 100                          # correct prediction percentage on all samples
-        metrics_log['correct_neg'] = neg_correct / np.float32(neg_count) * 100                          # correct prediction percentage on all samples
+        metrics_log['loss_avg'] = metrics[METRICS_LOSS_IDX].mean()                                          # average loss on all samples
+        metrics_log['loss_avg_pos'] = metrics[METRICS_LOSS_IDX, pos_labels_idx].mean()                      # average loss on positive samples, i.e. labled nodule samples
+        metrics_log['loss_avg_neg'] = metrics[METRICS_LOSS_IDX, neg_labels_idx].mean()                      # average loss on negative samples
+        metrics_log['correct_all'] = (true_positive + true_negative) / np.float32(metrics.shape[1]) * 100   # correct prediction percentage on all samples
+        metrics_log['correct_pos'] = true_positive / np.float32(pos_count) * 100                            # correct prediction percentage on all samples
+        metrics_log['correct_neg'] = true_negative / np.float32(neg_count) * 100                            # correct prediction percentage on all samples
+        metrics_log['precision'] = precision
+        metrics_log['recall'] = recall
+        metrics_log['f1'] = f1
 
         # print logs
-        log.info(f"Epoch {epoch_idx} {mode} {metrics_log['loss_avg']:.4f} loss, {metrics_log['correct_all']:.1f}% correct")
-        log.info(f"Epoch {epoch_idx} {mode} Positives {metrics_log['loss_avg_pos']:.4f} loss, {metrics_log['correct_pos']:.1f}% correct")
-        log.info(f"Epoch {epoch_idx} {mode} Negatives {metrics_log['loss_avg_neg']:.4f} loss, {metrics_log['correct_neg']:.1f}% correct")
+        log.info(f"Epoch {epoch_idx} {mode} {metrics_log['loss_avg']:.4f} loss, {metrics_log['correct_all']:.1f}% correct, precision {precision}, recall {recall}, F1 {f1}")
+        log.info(f"Epoch {epoch_idx} {mode} Positives {metrics_log['loss_avg_pos']:.4f} loss, {metrics_log['correct_pos']:.1f}% correct ({true_positive} of {pos_count} samples)")
+        log.info(f"Epoch {epoch_idx} {mode} Negatives {metrics_log['loss_avg_neg']:.4f} loss, {metrics_log['correct_neg']:.1f}% correct ({true_negative} of {neg_count} samples)")
 
         # train or val writer
         writer = getattr(self, mode + '_writer')
