@@ -4,6 +4,7 @@ import csv
 import glob
 import copy
 import os
+import random
 
 import numpy as np
 import SimpleITK as sitk
@@ -152,8 +153,11 @@ def get_ct_raw_candidate(series_uid, center_xyz, width_irc):
 
 class LunaDataset(Dataset):
 
-    def __init__(self, val_stride=10, is_val_set=None, series_uid=None):
+    def __init__(self, val_stride=10, is_val_set=None, series_uid=None, ratio=0):
         super().__init__()
+
+        # ratio of neg to pos samples, e.g. if ratio is 1, then 1:1, if 2, then 2:1
+        self.ratio = ratio
 
         # get all the data samples annotations
         self.nodule_candidate_info = copy.copy(get_nodule_candidate_info_list())    # copy so won't alter the cached copy
@@ -176,15 +180,35 @@ class LunaDataset(Dataset):
         # sort the data
         self.nodule_candidate_info.sort(key=lambda x: (x.series_uid, x.center))
 
-        log.info(f"Dataset {len(self.nodule_candidate_info)} {str('val') if is_val_set else str('train')} samples")
+        # keep track of positive and negative samples (for returning balanced data batches later)
+        self.postive_samples = [x for x in self.nodule_candidate_info if x.is_nodule]
+        self.negative_samples = [x for x in self.nodule_candidate_info if not x.is_nodule]
 
+        log.info(f"Dataset {len(self.nodule_candidate_info)} {str('val') if is_val_set else str('train')} samples")
 
     def __len__(self):
         return len(self.nodule_candidate_info)
     
     def __getitem__(self, idx):
-        # get the sample's annotation
-        sample = self.nodule_candidate_info[idx]
+        # if explicitly balancing positive and negative samples
+        if self.ratio:
+            
+            # every nth indice should be a positive sample
+            n = self.ratio + 1
+
+            if idx % n:
+                # if the current idx should be a negative sample
+                neg_idx = idx - 1 - idx // n
+                neg_idx %= len(self.negative_samples)
+                sample = self.negative_samples[neg_idx]
+            else:
+                # if the current idx should be a positive sample
+                pos_idx = idx // n
+                pos_idx %= len(self.postive_samples)
+                sample = self.postive_samples[pos_idx]
+        else:
+            # no balancing, just get the sample's annotation specified by the idx
+            sample = self.nodule_candidate_info[idx]
 
         # get the sample's center and also voxels around the center
         ct_chunk, center_irc = get_ct_raw_candidate(sample.series_uid, sample.center, width_irc)
