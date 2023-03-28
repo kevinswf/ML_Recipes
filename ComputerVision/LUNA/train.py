@@ -1,3 +1,4 @@
+import os
 import argparse
 import sys
 import datetime
@@ -7,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from model import LunaModel
 from dataset import LunaDataset
@@ -31,7 +33,7 @@ class LunaTrainingApp:
 
         # parse arguments
         parser = argparse.ArgumentParser()
-        parser.add_argument('--epochs', help='Number of epochs to train', default=1, type=int)
+        parser.add_argument('--epochs', help='Number of epochs to train', default=10, type=int)
         parser.add_argument('--batch-size', help='Batch size', default=32, type=int)
         parser.add_argument('--lr', help='Learning rate', default=0.001, type=float)
         parser.add_argument('--momentum', help='SGD momentum', default=0.9, type=float)
@@ -49,6 +51,10 @@ class LunaTrainingApp:
         self.model = self.init_model()
         self.optimizer = optim.SGD(self.model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         self.loss_func = nn.CrossEntropyLoss(reduction='none')  # reduction=none will give loss per sample, i.e. a tensor of loss, instead of averaged over batch
+
+        # tensorboard writers
+        self.train_writer = None
+        self.val_writer = None
 
 
     def init_model(self):
@@ -151,6 +157,9 @@ class LunaTrainingApp:
     
     # function to print logs for each epoch
     def log_metrics(self, epoch_idx, mode, metrics, classification_threshold=0.5):
+        # init tensorboard writers
+        self.init_tensorboard_writers()
+
         # get the indices of positive ground truth and predictions, i.e. predicted to be is nodule
         pos_labels_idx = metrics[METRICS_LABEL_IDX] > classification_threshold             # label is either 0 or 1, so > threshold is ok
         pos_preds_idx = metrics[METRICS_PRED_IDX] > classification_threshold
@@ -180,6 +189,19 @@ class LunaTrainingApp:
         log.info(f"Epoch {epoch_idx} {mode} Positives {metrics_log['loss_avg_pos']:.4f} loss, {metrics_log['correct_pos']:.1f}% correct")
         log.info(f"Epoch {epoch_idx} {mode} Negatives {metrics_log['loss_avg_neg']:.4f} loss, {metrics_log['correct_neg']:.1f}% correct")
 
+        # train or val writer
+        writer = getattr(self, mode + '_writer')
+        # write metrics to tensorboard
+        for key, value in metrics_log.items():
+            writer.add_scalar(key, value, self.total_train_samples_count)
+
+    def init_tensorboard_writers(self):
+        # only init tensorboard writer if have not
+        if self.train_writer is None:
+            log_dir = os.path.join('runs', self.time_str)
+            self.train_writer = SummaryWriter(log_dir=log_dir+'-Train')
+            self.val_writer = SummaryWriter(log_dir=log_dir+'-Val')
+
 
     def main(self):
         log.info(f"Starting {type(self).__name__}, {self.args}")
@@ -195,8 +217,13 @@ class LunaTrainingApp:
             self.log_metrics(epoch, 'train', train_metrics)
 
             val_metrics = self.eval(epoch, val_dl)
-            self.log_metrics(epoch, 'eval', val_metrics)
+            self.log_metrics(epoch, 'val', val_metrics)
 
+        # close tensorboard writers
+        if self.train_writer is not None:
+            self.train_writer.close()
+            self.val_writer.close()
+        
         print("Done")
 
 
