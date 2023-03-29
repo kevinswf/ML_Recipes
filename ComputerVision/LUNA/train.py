@@ -39,11 +39,21 @@ class LunaTrainingApp:
         parser.add_argument('--momentum', help='SGD momentum', default=0.9, type=float)
         parser.add_argument('--num-workers', help='Dataloader workers', default=6, type=int)
         parser.add_argument('--balance-data', help='Balance the training data with same number of positive and negative samples, value of 1 means 1:1', default=1, type=int)
+        parser.add_argument('--augmentation', help='Data augmentation', action='store_true', default=True)
         self.args = parser.parse_args(sys_argv)
 
         self.time_str = datetime.datetime.now().strftime('%Y-%m-%d_%H.%M.%S')
 
         self.total_train_samples_count = 0              # how many samples have we trained
+
+        # data augmentation?
+        self.augmentations = {}
+        if self.args.augmentation:
+            self.augmentations['flip'] = True
+            self.augmentations['shift'] = 0.1
+            self.augmentations['scale'] = 0.2
+            self.augmentations['rotate'] = True
+            self.augmentations['noise'] = 25
 
         # GPU?
         self.use_cuda = torch.cuda.is_available()
@@ -74,7 +84,7 @@ class LunaTrainingApp:
         if self.use_cuda:
             batch_size *= torch.cuda.device_count()
 
-        train_ds = LunaDataset(val_stride=10, is_val_set=False, ratio=self.args.balance_data)
+        train_ds = LunaDataset(val_stride=10, is_val_set=False, ratio=self.args.balance_data, augmentations=self.augmentations)
         val_ds = LunaDataset(val_stride=10, is_val_set=True)
 
         train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory=self.use_cuda, num_workers=self.args.num_workers)

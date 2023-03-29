@@ -4,6 +4,7 @@ import csv
 import glob
 import copy
 import os
+import math
 import random
 
 import numpy as np
@@ -11,6 +12,7 @@ import SimpleITK as sitk
 
 import torch
 from torch.utils.data import Dataset
+import torch.nn.functional as F
 
 from util.util import xyz_tuple, xyz_to_irc
 from util.disk import get_cache
@@ -151,13 +153,75 @@ def get_ct_raw_candidate(series_uid, center_xyz, width_irc):
     ct_chunk, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
     return ct_chunk, center_irc
 
+def get_augmented_ct_candidate(augmentations, uid, center_xyz, width_irc):
+    # get the unaugmented data
+    ct_chunk, center_irc = get_ct_raw_candidate(uid, center_xyz, width_irc)
+
+    # convert to tensor
+    ct = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32) # add a batch and channel dimension, now (batch, channel, index, row, column)
+
+    # 3D transformation matrix
+    transform = torch.eye(4)    # init to diagonal matrix, i.e. no transformation
+
+    for i in range(3):  # 3 because IRC dimensions
+        # random flip in any axis
+        if 'flip' in augmentations:
+            if random.random() > 0.5:
+                transform[i, i] *= -1
+
+        # random shifting by a few voxels
+        if 'shift' in augmentations:
+            offset_value = augmentations['shift']
+            shifting_scale = random.random() * 2 - 1
+            transform[i, 3] = offset_value * shifting_scale   # translation is the 4th column in a transformation matrix
+
+        # random scale
+        if 'scale' in augmentations:
+            scale_value = augmentations['scale']
+            random_scale_factor = random.random() * 2 - 1
+            transform[i, i] *= 1.0 + scale_value * random_scale_factor
+
+    if 'rotate' in augmentations:
+        # random rotation angle
+        angle_rad = random.random() * math.pi * 2
+
+        s = math.sin(angle_rad)
+        c = math.cos(angle_rad)
+
+        # only rotate in the xy dimension (because z dimension has a different scale in the CT, rotating might stretch it)
+        rotation = torch.tensor([
+            [c, -s, 0, 0],
+            [s, c, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ])
+
+        # rotation matrix multiplication
+        transform @= rotation
+
+    # augment the sample using the transformation matrix
+    affine = F.affine_grid(transform[:3].unsqueeze(0).to(torch.float32), ct.size(), align_corners=False)
+    augmented_ct = F.grid_sample(ct, affine, padding_mode='border', align_corners=False).to('cpu')
+
+    # add random noise
+    if 'noise' in augmentations:
+        noise = torch.randn_like(augmented_ct)
+        noise *= augmentations['noise']
+        augmented_ct += noise
+
+    return augmented_ct[0], center_irc
+
+
 class LunaDataset(Dataset):
 
-    def __init__(self, val_stride=10, is_val_set=None, series_uid=None, ratio=0):
+    def __init__(self, val_stride=10, is_val_set=None, series_uid=None, ratio=0, augmentations=None):
         super().__init__()
 
         # ratio of neg to pos samples, e.g. if ratio is 1, then 1:1, if 2, then 2:1
         self.ratio = ratio
+
+        # use training data augmentation?
+        self.augmentations = augmentations
 
         # get all the data samples annotations
         self.nodule_candidate_info = copy.copy(get_nodule_candidate_info_list())    # copy so won't alter the cached copy
@@ -210,11 +274,16 @@ class LunaDataset(Dataset):
             # no balancing, just get the sample's annotation specified by the idx
             sample = self.nodule_candidate_info[idx]
 
-        # get the sample's center and also voxels around the center
-        ct_chunk, center_irc = get_ct_raw_candidate(sample.series_uid, sample.center, width_irc)
 
-        ct_chunk = torch.from_numpy(ct_chunk).to(torch.float32)     # convert to tesnor
-        ct_chunk = ct_chunk.unsqueeze(0)                            # add a channel dimension, now (channel, index, row, column)
+        if self.augmentations:
+            # get the sample's center and also voxels around the center (with data augmentation)
+            ct_chunk, center_irc = get_augmented_ct_candidate(self.augmentations, sample.series_uid, sample.center, width_irc)
+        else:
+            # get the sample's center and also voxels around the center
+            ct_chunk, center_irc = get_ct_raw_candidate(sample.series_uid, sample.center, width_irc)
+
+            ct_chunk = torch.from_numpy(ct_chunk).to(torch.float32)     # convert to tesnor
+            ct_chunk = ct_chunk.unsqueeze(0)                            # add a channel dimension, now (channel, index, row, column)
 
         # construct label as two class, i.e. not nodule or is nodule
         label = torch.tensor([not sample.is_nodule, sample.is_nodule], dtype=torch.long)
